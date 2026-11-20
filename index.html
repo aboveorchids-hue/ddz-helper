@@ -112,7 +112,7 @@ import { Agent, LABEL } from './engine.js';
 import { Tracker } from './tracker.js?v=h1';
 import { readScreenshot, locateTable } from './vision.js?v=h1';
 
-const VERSION = 'h1';
+const VERSION = 'h2';
 const $ = (id) => document.getElementById(id);
 const t0 = performance.now(), lines = [];
 const ts = () => ((performance.now() - t0) / 1000).toFixed(1);
@@ -346,7 +346,7 @@ async function start() {
   try { await v.play(); } catch (e) { log('影像播放：' + e.name); }
   if (track) startWorker(track);
   wake();
-  lastFp = null; T.inTurn = false; T.pendKey = null; rotOk = false; misses = 0; nextTry = 1;
+  lastFp = null; T.inTurn = false; T.pendKey = null; rotOk = false; misses = 0; nextTry = 1; scanDims = ''; sinceScan = 0;
   $('startBtn').hidden = true; $('stopBtn').hidden = false;
   timer = setInterval(tick, 700);
   showIdle();
@@ -386,25 +386,30 @@ function grab(src, W, H, r = 0) {
   }
   return img;
 }
-// read a frame in the current direction; when the table keeps not showing up, try the other three directions
-const good = (rec) => rec.ok && rec.handGlyphs.length > 0;
+// The shared screen can arrive turned on its side. Until the direction is known (and again whenever the table
+// stops showing up), read the frame in all four directions and keep the one that shows the most cards in hand.
+const good = (rec) => rec.ok && rec.handGlyphs.length >= 3;
+const score = (rec) => (rec.ok ? rec.handGlyphs.length + 2 * rec.buttons.length : -1);
+function readAt(src, W, H, r) { const img = grab(src, W, H, r); return { img, rec: readScreenshot(img, templates, false, missionTpl), r }; }
+let scanDims = '', sinceScan = 0;
 function readFrame(src, W, H) {
-  let img = grab(src, W, H, rot), rec = readScreenshot(img, templates, false, missionTpl);
-  if (good(rec)) { rotOk = true; misses = 0; nextTry = 2; return { img, rec }; }
-  if (++misses < nextTry) return { img, rec };
-  misses = 0;
+  const cur = readAt(src, W, H, rot), dims = `${W}x${H}`;
+  const due = dims !== scanDims || ++sinceScan >= 15; // the iPad was turned, or a routine re-check
+  if (rotOk && good(cur.rec) && !due) { misses = 0; return cur; }
+  if (!due && ++misses < nextTry) return cur;
+  misses = 0; sinceScan = 0; scanDims = dims;
+  let best = cur;
   for (const r of [0, 90, 270, 180]) {
     if (r === rot) continue;
-    const i2 = grab(src, W, H, r), r2 = readScreenshot(i2, templates, false, missionTpl);
-    if (good(r2)) {
-      rot = r; rotOk = true; nextTry = 2;
-      $('video').style.transform = r ? `rotate(${r}deg)` : '';
-      log(`畫面方向：轉 ${r}° 才是正的`);
-      return { img: i2, rec: r2 };
-    }
+    const t = readAt(src, W, H, r);
+    if (score(t.rec) > score(best.rec) + (best === cur && good(cur.rec) ? 2 : 0)) best = t;
   }
-  nextTry = rotOk ? 2 : 6; // nothing found (no game on screen): look less often
-  return { img, rec };
+  if (good(best.rec)) {
+    if (!rotOk || best.r !== rot) log(`畫面方向：轉 ${best.r}° 才是正的（手牌 ${best.rec.handGlyphs.length} 張）`);
+    rot = best.r; rotOk = true; nextTry = 3;
+    $('video').style.transform = rot ? `rotate(${rot}deg)` : '';
+  } else nextTry = 5; // no game on screen right now: look again a few reads later
+  return best;
 }
 async function tick() {
   if (busy || !stream) return;
