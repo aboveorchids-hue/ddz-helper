@@ -112,7 +112,7 @@ import { Agent, LABEL } from './engine.js';
 import { Tracker } from './tracker.js?v=h1';
 import { readScreenshot, locateTable } from './vision.js?v=h1';
 
-const VERSION = 'h3';
+const VERSION = 'h4';
 const $ = (id) => document.getElementById(id);
 const t0 = performance.now(), lines = [];
 const ts = () => ((performance.now() - t0) / 1000).toFixed(1);
@@ -216,7 +216,30 @@ function summary(r) {
 // A turn is identified by what the table shows (phase, my card count, the opponents' plays, the
 // bidding banner); raising cards in the game does not start a new turn. A new turn is acted on
 // once two reads in a row agree, so animations are never read half way.
-const T = { inTurn: false, key: null, pendKey: null, lastTotal: null, lastPhase: null, oppSeen: 0 };
+const T = { inTurn: false, key: null, pendKey: null, lastTotal: null, lastPhase: null, oppSeen: 0, seen: {}, lastCnt: {} };
+// What each opponent's spot on the table showed since my last advice. A chat bubble can cover their cards by the time
+// it is my turn; then the cards seen earlier are used, if their card count went down by exactly that many.
+const SIDE = { left: '左', right: '右' };
+function noteSides(rec) {
+  for (const s of ['left', 'right']) {
+    const gl = rec[s + 'Glyphs'], pass = rec[s + 'Pass'];
+    if (gl.length || pass) T.seen[s] = { glyphs: gl, pass };
+  }
+}
+function fillCovered(rec) {
+  for (const s of ['left', 'right']) {
+    const seen = T.seen[s], now = cnt(rec, s), before = T.lastCnt[s];
+    if (rec[s + 'Glyphs'].length || rec[s + 'Pass'] || !seen || now == null || before == null) continue;
+    const d = before - now;
+    if (seen.glyphs.length && d === seen.glyphs.length) {
+      rec[s + 'Glyphs'] = seen.glyphs;
+      log(`${SIDE[s]}家的牌被擋住了，用剛才看到的 ${seen.glyphs.map((g) => g.joker || g.label).join('')}`);
+    } else if (seen.pass && d === 0) {
+      rec[s + 'Pass'] = true;
+      log(`${SIDE[s]}家被擋住了，用剛才看到的「不出」`);
+    }
+  }
+}
 // cards left in all three hands, from the count bubbles; it always goes down between two of my turns
 const cnt = (rec, s) => { const c = rec.counts && rec.counts[s]; return c && c.value != null && c.dist < 0.06 ? c.value : null; };
 function totalOf(rec) { const a = cnt(rec, 'me'), b = cnt(rec, 'left'), c = cnt(rec, 'right'); return a != null && b != null && c != null ? a + b + c : null; }
@@ -233,6 +256,7 @@ async function onRead(img, rec, src) {
   if (!myTurn) {
     if (T.inTurn) log('對手回合');
     T.inTurn = false; T.pendKey = null; T.oppSeen++;
+    noteSides(rec);
     setState('等對手…');
     $('advice').classList.add('old');
     return;
@@ -240,6 +264,8 @@ async function onRead(img, rec, src) {
   const phase = rec.bottom.state === 'down' ? 'bid' : rec.bottom.state === 'up' ? 'play' : rec.buttons.length === 2 ? 'bid' : 'play';
   const key = turnKey(rec, phase);
   if (T.inTurn && key === T.key) return; // already advised on this turn
+  if (phase === 'bid' && rec.handGlyphs.length < 14) { setState('等下一局…'); return; } // the end-of-game screen
+  noteSides(rec);
   if (key !== T.pendKey) { T.pendKey = key; setState('輪到你，讀牌中…', 'turn'); if (worker) worker.postMessage({ want: true }); return; }
   T.inTurn = true; T.key = key; T.pendKey = null;
   // Still the same turn if no cards left anyone's hand since my last advice (a flicker in the read, raised cards,
@@ -256,8 +282,10 @@ async function onRead(img, rec, src) {
     undoStack.push(JSON.stringify(tracker.game)); if (undoStack.length > 40) undoStack.shift();
     $('undoBtn').disabled = false;
     const t1 = performance.now();
+    if (phase === 'play') fillCovered(rec);
     const r = tracker.process(img, rec);
-    T.lastTotal = tot; T.lastPhase = phase; T.oppSeen = 0;
+    T.lastTotal = tot; T.lastPhase = phase; T.oppSeen = 0; T.seen = {};
+    T.lastCnt = phase === 'play' ? { left: cnt(rec, 'left'), right: cnt(rec, 'right') } : {};
     $('advice').classList.remove('old');
     render(r);
     setState('輪到你', 'turn');
@@ -481,7 +509,7 @@ $('fileIn').addEventListener('change', () => { fromFile($('fileIn').files[0]); $
 $('newBtn').addEventListener('click', () => {
   if (tracker) tracker.reset();
   undoStack.length = 0; $('undoBtn').disabled = true;
-  T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; T.oppSeen = 0;
+  T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; T.oppSeen = 0; T.seen = {}; T.lastCnt = {};
   log('新的一局'); showIdle();
 });
 $('undoBtn').addEventListener('click', () => {
