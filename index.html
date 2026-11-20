@@ -262,7 +262,7 @@ $('support').textContent = supported ? '這個瀏覽器可以分享螢幕。' : 
 if (!supported) $('support').classList.add('no');
 const MAXSIDE = 1900, FELT = 1300; // read at most 1900 px wide, scaled so the table felt is about 1300 px wide
 const R = { reads: 0, size: '', ms: [], wstate: '沒試', lastBeat: 0, lastN: 0 };
-let lastS = null, lastRead = 0;
+let scaleBy = {}, lastRead = 0, rot = 0, rotOk = false, misses = 0, nextTry = 1;
 let stream = null, timer = null, lastFp = null, worker = null, pending = null, wakeLock = null;
 const cv = document.createElement('canvas'), g = cv.getContext('2d', { willReadFrequently: true });
 const sm = document.createElement('canvas'); sm.width = 48; sm.height = 27;
@@ -346,7 +346,7 @@ async function start() {
   try { await v.play(); } catch (e) { log('影像播放：' + e.name); }
   if (track) startWorker(track);
   wake();
-  lastFp = null; T.inTurn = false; T.pendKey = null;
+  lastFp = null; T.inTurn = false; T.pendKey = null; rotOk = false; misses = 0; nextTry = 1;
   $('startBtn').hidden = true; $('stopBtn').hidden = false;
   timer = setInterval(tick, 700);
   showIdle();
@@ -363,30 +363,55 @@ function stop(byTrack) {
   showIdle();
 }
 // draw a source (video / bitmap) scaled so its longer side is at most MAXSIDE, return ImageData
-function draw(src, W, H, s) {
+// draw scaled by s and turned by r degrees (the shared screen can arrive lying on its side)
+function draw(src, W, H, s, r = 0) {
   const w = Math.round(W * s), h = Math.round(H * s);
-  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-  g.drawImage(src, 0, 0, w, h);
-  return g.getImageData(0, 0, w, h);
+  const cw = r % 180 ? h : w, ch = r % 180 ? w : h;
+  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  g.setTransform(1, 0, 0, 1, cw / 2, ch / 2);
+  g.rotate((r * Math.PI) / 180);
+  g.drawImage(src, -w / 2, -h / 2, w, h);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  return g.getImageData(0, 0, cw, ch);
 }
 // small game windows are read at full resolution, big ones are scaled down so the felt is about FELT px wide
-function grab(src, W, H) {
-  let s = lastS || Math.min(1, MAXSIDE / Math.max(W, H));
-  let img = draw(src, W, H, s);
+function grab(src, W, H, r = 0) {
+  let s = scaleBy[r] || Math.min(1, MAXSIDE / Math.max(W, H));
+  let img = draw(src, W, H, s, r);
   const tb = locateTable(img);
   if (tb && tb.width > 50) {
     const want = Math.min(1, s * FELT / tb.width);
-    if (Math.abs(want - s) / s > 0.12) { s = want; img = draw(src, W, H, s); }
-    lastS = s;
+    if (Math.abs(want - s) / s > 0.12) { s = want; img = draw(src, W, H, s, r); }
+    scaleBy[r] = s;
   }
   return img;
+}
+// read a frame in the current direction; when the table keeps not showing up, try the other three directions
+const good = (rec) => rec.ok && rec.handGlyphs.length > 0;
+function readFrame(src, W, H) {
+  let img = grab(src, W, H, rot), rec = readScreenshot(img, templates, false, missionTpl);
+  if (good(rec)) { rotOk = true; misses = 0; nextTry = 2; return { img, rec }; }
+  if (++misses < nextTry) return { img, rec };
+  misses = 0;
+  for (const r of [0, 90, 270, 180]) {
+    if (r === rot) continue;
+    const i2 = grab(src, W, H, r), r2 = readScreenshot(i2, templates, false, missionTpl);
+    if (good(r2)) {
+      rot = r; rotOk = true; nextTry = 2;
+      $('video').style.transform = r ? `rotate(${r}deg)` : '';
+      log(`畫面方向：轉 ${r}° 才是正的`);
+      return { img: i2, rec: r2 };
+    }
+  }
+  nextTry = rotOk ? 2 : 6; // nothing found (no game on screen): look less often
+  return { img, rec };
 }
 async function tick() {
   if (busy || !stream) return;
   const v = $('video');
-  let img = null, from = '';
+  let src = null, W = 0, H = 0, from = '';
   if (workerLive()) {
-    if (pending) { img = grab(pending, pending.width, pending.height); pending.close(); pending = null; from = '背景'; }
+    if (pending) { src = pending; pending = null; W = src.width; H = src.height; from = '背景'; }
   } else if (v.videoWidth && v.readyState >= 2) {
     gs.drawImage(v, 0, 0, 48, 27);
     const px = gs.getImageData(0, 0, 48, 27).data, fp = new Uint8Array(48 * 27);
@@ -395,13 +420,14 @@ async function tick() {
     if (lastFp) { for (let i = 0; i < fp.length; i++) diff += Math.abs(fp[i] - lastFp[i]); diff /= fp.length; }
     const changed = !lastFp || diff > 0.4;
     lastFp = fp;
-    if (changed || T.pendKey || performance.now() - lastRead > 2000) { img = grab(v, v.videoWidth, v.videoHeight); from = '影片'; }
+    if (changed || T.pendKey || performance.now() - lastRead > 2000) { src = v; W = v.videoWidth; H = v.videoHeight; from = '影片'; }
   }
-  if (!img) return;
-  if (R.size !== `${img.width}x${img.height}`) { R.size = `${img.width}x${img.height}`; log(`讀的畫面 ${R.size}（${from}）`); }
+  if (!src) return;
   const r0 = performance.now();
-  let rec;
-  try { rec = readScreenshot(img, templates, false, missionTpl); } catch (e) { log('讀畫面出錯：' + (e.message || e)); return; }
+  let img, rec;
+  try { ({ img, rec } = readFrame(src, W, H)); } catch (e) { log('讀畫面出錯：' + (e.message || e)); return; }
+  finally { if (src !== v && src.close) src.close(); }
+  if (R.size !== `${W}x${H}→${img.width}x${img.height}`) { R.size = `${W}x${H}→${img.width}x${img.height}`; log(`讀的畫面 ${R.size}（${from}）`); }
   R.ms.push(Math.round(performance.now() - r0)); if (R.ms.length > 50) R.ms.shift();
   R.reads++; lastRead = performance.now();
   renderStatus();
@@ -430,7 +456,7 @@ async function fromFile(file) {
   finally { busy = false; }
 }
 // for testing without a shared screen: feed a picture as if it came from the stream
-window.__feed = async (blob) => { const bmp = await createImageBitmap(blob); const img = grab(bmp, bmp.width, bmp.height); const rec = readScreenshot(img, templates, false, missionTpl); await onRead(img, rec, '測試'); return { state: stateTxt, html: $('advice').innerText }; };
+window.__feed = async (blob) => { const bmp = await createImageBitmap(blob); const { img, rec } = readFrame(bmp, bmp.width, bmp.height); await onRead(img, rec, '測試'); return { state: stateTxt, html: $('advice').innerText }; };
 
 $('startBtn').addEventListener('click', start);
 $('stopBtn').addEventListener('click', () => stop(false));
