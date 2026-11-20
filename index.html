@@ -112,7 +112,7 @@ import { Agent, LABEL } from './engine.js';
 import { Tracker } from './tracker.js?v=h1';
 import { readScreenshot, locateTable } from './vision.js?v=h1';
 
-const VERSION = 'h2';
+const VERSION = 'h3';
 const $ = (id) => document.getElementById(id);
 const t0 = performance.now(), lines = [];
 const ts = () => ((performance.now() - t0) / 1000).toFixed(1);
@@ -216,10 +216,14 @@ function summary(r) {
 // A turn is identified by what the table shows (phase, my card count, the opponents' plays, the
 // bidding banner); raising cards in the game does not start a new turn. A new turn is acted on
 // once two reads in a row agree, so animations are never read half way.
-const T = { inTurn: false, key: null, pendKey: null };
+const T = { inTurn: false, key: null, pendKey: null, lastTotal: null, lastPhase: null, oppSeen: 0 };
+// cards left in all three hands, from the count bubbles; it always goes down between two of my turns
+const cnt = (rec, s) => { const c = rec.counts && rec.counts[s]; return c && c.value != null && c.dist < 0.06 ? c.value : null; };
+function totalOf(rec) { const a = cnt(rec, 'me'), b = cnt(rec, 'left'), c = cnt(rec, 'right'); return a != null && b != null && c != null ? a + b + c : null; }
 function turnKey(rec, phase) {
   const side = (gl, pass) => (pass ? 'P' : gl.map((g) => g.joker || g.label).join(','));
-  return [phase, rec.handGlyphs.length, side(rec.leftGlyphs, rec.leftPass), side(rec.rightGlyphs, rec.rightPass), rec.bidKind || '', rec.noBeat ? 'N' : ''].join('|');
+  const tot = totalOf(rec);
+  return [phase, tot == null ? '?' : tot, rec.handGlyphs.length, side(rec.leftGlyphs, rec.leftPass), side(rec.rightGlyphs, rec.rightPass), rec.bidKind || ''].join('|');
 }
 let busy = false;
 async function onRead(img, rec, src) {
@@ -228,7 +232,7 @@ async function onRead(img, rec, src) {
   const myTurn = rec.myTimer > 0.15 || rec.buttons.length >= 2;
   if (!myTurn) {
     if (T.inTurn) log('對手回合');
-    T.inTurn = false; T.pendKey = null;
+    T.inTurn = false; T.pendKey = null; T.oppSeen++;
     setState('等對手…');
     $('advice').classList.add('old');
     return;
@@ -238,6 +242,13 @@ async function onRead(img, rec, src) {
   if (T.inTurn && key === T.key) return; // already advised on this turn
   if (key !== T.pendKey) { T.pendKey = key; setState('輪到你，讀牌中…', 'turn'); if (worker) worker.postMessage({ want: true }); return; }
   T.inTurn = true; T.key = key; T.pendKey = null;
+  // Still the same turn if no cards left anyone's hand since my last advice (a flicker in the read, raised cards,
+  // a banner): keep the advice instead of recording the opponents' plays a second time.
+  const tot = totalOf(rec);
+  if (phase === 'play' && T.lastPhase === 'play' && lastHTML) {
+    const same = tot != null && T.lastTotal != null ? tot === T.lastTotal : T.oppSeen < 2;
+    if (same) { $('advice').classList.remove('old'); setState('輪到你', 'turn'); return; }
+  }
   busy = true;
   setState('輪到你，計算中…', 'turn');
   await new Promise((r) => setTimeout(r, 0));
@@ -246,6 +257,7 @@ async function onRead(img, rec, src) {
     $('undoBtn').disabled = false;
     const t1 = performance.now();
     const r = tracker.process(img, rec);
+    T.lastTotal = tot; T.lastPhase = phase; T.oppSeen = 0;
     $('advice').classList.remove('old');
     render(r);
     setState('輪到你', 'turn');
@@ -469,7 +481,7 @@ $('fileIn').addEventListener('change', () => { fromFile($('fileIn').files[0]); $
 $('newBtn').addEventListener('click', () => {
   if (tracker) tracker.reset();
   undoStack.length = 0; $('undoBtn').disabled = true;
-  T.inTurn = false; T.key = null; T.pendKey = null;
+  T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; T.oppSeen = 0;
   log('新的一局'); showIdle();
 });
 $('undoBtn').addEventListener('click', () => {
@@ -477,7 +489,7 @@ $('undoBtn').addEventListener('click', () => {
   const prev = undoStack.pop();
   tracker.game = prev === 'null' || prev === undefined ? null : JSON.parse(prev);
   $('undoBtn').disabled = undoStack.length === 0;
-  T.inTurn = false; T.key = null; T.pendKey = null; // read the current turn again
+  T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; // read the current turn again
   log('撤銷上一手');
   lastHTML = '<p class="verb wait">已撤銷，等下一次讀到的畫面…</p>'; paint();
 });
