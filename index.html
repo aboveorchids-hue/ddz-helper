@@ -189,7 +189,7 @@ async function boot() {
   }
 }
 
-const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&', '<': '<', '>': '>' }[c]));
+const ENT={amp:'&'+'amp;',lt:'&'+'lt;',gt:'&'+'gt;'}; const esc=(s)=>String(s).replace(/[&<>]/g,c=>({'&':ENT.amp,'<':ENT.lt,'>':ENT.gt}[c]));
 const sortDesc = (a) => a.slice().sort((x, y) => y - x);
 const fmtMove = (m) => (m.length ? sortDesc(m).map((c) => LABEL[c]).join(' ') : '不出');
 function handHTML(hand, sel) {
