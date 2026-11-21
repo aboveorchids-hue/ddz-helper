@@ -90,7 +90,6 @@ textarea { width: 100%; min-height: 140px; margin-top: 10px; font-family: var(--
       <label>出牌目標
         <select id="modeIn"><option value="ev">期望盈利（推薦）</option><option value="wp">勝率優先（輸贏較穩）</option></select>
       </label>
-      <label><input type="checkbox" id="voiceIn" checked> 語音提示</label>
       <label>也可以選截圖 <input id="fileIn" type="file" accept="image/*"></label>
     </div>
     <div class="status" id="status"></div>
@@ -113,7 +112,7 @@ import { Agent, LABEL } from './engine.js';
 import { Tracker } from './tracker.js?v=h1';
 import { readScreenshot, locateTable } from './vision.js?v=h1';
 
-const VERSION = 'h5';
+const VERSION = 'h4';
 const $ = (id) => document.getElementById(id);
 const t0 = performance.now(), lines = [];
 const ts = () => ((performance.now() - t0) / 1000).toFixed(1);
@@ -123,43 +122,10 @@ function log(msg) {
   $('log').textContent = lines.slice(-150).join('\n');
 }
 $('ver').textContent = VERSION;
-
-// ---------- 語音提示 ----------
-let voiceEnabled = true;
-try {
-  const v = localStorage.getItem('ddz_voice');
-  if (v === '0') voiceEnabled = false;
-} catch (e) {}
-const voiceIn = $('voiceIn');
-if (voiceIn) {
-  voiceIn.checked = voiceEnabled;
-  voiceIn.addEventListener('change', () => {
-    voiceEnabled = voiceIn.checked;
-    try { localStorage.setItem('ddz_voice', voiceEnabled ? '1' : '0'); } catch (e) {}
-  });
-}
-function speakAdvice(text) {
-  if (!voiceEnabled || !text || !window.speechSynthesis) return;
-  try {
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(String(text));
-    u.lang = 'zh-TW';
-    u.rate = 1.15;
-    u.volume = 1;
-    const voices = speechSynthesis.getVoices();
-    const prefer = voices.find(v => /zh-TW|zh_TW|Chinese.*Taiwan|國語|台/.test(v.lang + v.name))
-      || voices.find(v => /zh-CN|zh_CN|Chinese|中文|普通话/.test(v.lang + v.name));
-    if (prefer) u.voice = prefer;
-    speechSynthesis.speak(u);
-  } catch (e) { log('語音失敗：' + (e.message || e)); }
-}
-if (window.speechSynthesis) {
-  speechSynthesis.getVoices();
-  speechSynthesis.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
-}
 window.addEventListener('error', (e) => log('錯誤：' + (e.message || e)));
 window.addEventListener('unhandledrejection', (e) => log('錯誤：' + (e.reason && e.reason.message || e.reason)));
 
+// ---------- the advisor (same engine as the Claude version) ----------
 let tracker = null, agent = null, templates = null, missionTpl = null;
 const undoStack = [];
 async function boot() {
@@ -189,7 +155,7 @@ async function boot() {
   }
 }
 
-const ENT={amp:'&'+'amp;',lt:'&'+'lt;',gt:'&'+'gt;'}; const esc=(s)=>String(s).replace(/[&<>]/g,c=>({'&':ENT.amp,'<':ENT.lt,'>':ENT.gt}[c]));
+const esc=(s)=>{const m={38:'amp',60:'lt',62:'gt'};return String(s).replace(/[&<>]/g,c=>String.fromCharCode(38)+m[c.charCodeAt(0)]+';');};
 const sortDesc = (a) => a.slice().sort((x, y) => y - x);
 const fmtMove = (m) => (m.length ? sortDesc(m).map((c) => LABEL[c]).join(' ') : '不出');
 function handHTML(hand, sel) {
@@ -208,6 +174,7 @@ function seenHTML(r) {
   return `<div class="seen">左家 <b>${esc(side(rec.leftGlyphs, rec.leftPass))}</b>${left(c.left)}　右家 <b>${esc(side(rec.rightGlyphs, rec.rightPass))}</b>${left(c.right)}　你 <b>${r.hand.length}</b> 張${seq ? `<br>本局：${esc(seq)}` : ''}</div>`;
 }
 
+// what the advice card shows: the state line on top, then the latest advice (dimmed while waiting)
 let lastHTML = '', stateTxt = '', stateCls = '';
 function paint() {
   $('advice').innerHTML = `<span class="state ${stateCls}">${esc(stateTxt)}</span>` + (lastHTML || '');
@@ -220,29 +187,24 @@ function showIdle() {
 }
 function render(r) {
   let h = '';
-  let speakText = '';
   if (r.kind === 'error' || r.kind === 'wait') {
     h = `<p class="verb wait">${esc(r.message)}</p>${r.hand && r.hand.length ? handHTML(r.hand, []) : ''}`;
   } else if (r.kind === 'bid') {
     h = `<p class="who">叫地主階段</p><p class="verb ${r.take ? 'take' : 'pass'}">${esc(r.message)}</p><p class="sub">${esc(r.detail)}</p>` +
       (r.mission ? `<span class="mission">任務：最後一手${esc(r.mission.word)}獲勝 ×${r.mission.mult}</span><p class="note">叫地主的建議還沒把任務算進去</p>` : '') +
       handHTML(r.hand, []) + warnHTML(r.warnings);
-    speakText = r.message || '';
   } else if (r.kind === 'play') {
     const m = r.best.move, pass = !m.length;
     const who = { landlord: '你是地主', landlord_up: '你是農民（地主上家）', landlord_down: '你是農民（地主下家）' }[r.pos.me];
     const ev = r.best.missionEv != null ? `・期望（含任務）${r.best.missionEv >= 0 ? '+' : ''}${r.best.missionEv.toFixed(2)}` : r.best.ev != null ? `・期望 ${r.best.ev >= 0 ? '+' : ''}${r.best.ev.toFixed(2)}` : '';
-    const moveText = pass ? '不出' : fmtMove(m);
-    h = `<p class="who">${who}・建議</p><p class="verb${pass ? ' pass' : ''}">${pass ? '不出' : esc(moveText)}</p>` +
+    h = `<p class="who">${who}・建議</p><p class="verb${pass ? ' pass' : ''}">${pass ? '不出' : esc(fmtMove(m))}</p>` +
       `<p class="sub">${pass ? '按「不出」' : '點亮下面標起來的牌，按「出牌」'}${r.best.winProb != null ? `・勝率 ${(r.best.winProb * 100).toFixed(0)}%` : ''}${ev}</p>` +
       (r.mission ? `<span class="mission">任務：最後一手${esc(r.mission.word)}獲勝 ×${r.mission.mult}</span>${r.mission.changed ? `<p class="note warn">為了任務改出這手（不管任務的話：${esc(fmtMove(r.mission.plain))}）</p>` : ''}` : '') +
       handHTML(r.hand, m) + warnHTML(r.warnings) + seenHTML(r) +
       (r.ranked.length > 1 ? `<p class="note">其他：${r.ranked.slice(1).map((x) => { const e = x.missionEv != null ? x.missionEv : x.ev; return `${esc(fmtMove(x.move))}${x.winProb != null ? `（${(x.winProb * 100).toFixed(0)}%${e != null ? `，${e >= 0 ? '+' : ''}${e.toFixed(2)}` : ''}）` : ''}`; }).join('、')}</p>` : '');
-    speakText = moveText;
   }
   lastHTML = h;
   paint();
-  if (speakText) speakAdvice(speakText);
 }
 function summary(r) {
   if (r.kind === 'bid') return `叫地主：${r.message}（${r.hand.length} 張）`;
@@ -250,6 +212,7 @@ function summary(r) {
   return `${r.kind}：${r.message || ''}`;
 }
 
+// ---------- one turn = one advice ----------
 const T = { inTurn: false, key: null, pendKey: null, lastTotal: null, lastPhase: null, oppSeen: 0, seen: {}, lastCnt: {} };
 const SIDE = { left: '左', right: '右' };
 function noteSides(rec) {
@@ -323,6 +286,7 @@ async function onRead(img, rec, src) {
   finally { busy = false; }
 }
 
+// ---------- reading the screen ----------
 const supported = !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
 $('support').textContent = supported ? '這個瀏覽器可以分享螢幕。' : '這個瀏覽器不能分享螢幕（iPad 要 iPadOS 27 的 Safari）。仍然可以用上面的「選截圖」。';
 if (!supported) $('support').classList.add('no');
