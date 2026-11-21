@@ -1,1 +1,503 @@
-PLACEHOLDER
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>鬥地主小助手</title>
+<link rel="icon" href="data:,">
+<style>
+/* One narrow column (it sits beside the game in split screen): the advice first, then the controls, then the log */
+:root {
+  --bg: #F1ECE4; --surface: #FFFFFF; --raise: #F8F4EE; --ink: #2A1E14; --muted: #74675A; --line: #DCD2C4;
+  --accent: #D9620F; --accent-ink: #FFFFFF; --good: #23855A; --bad: #B8323F; --warn-ink: #85560F;
+  --card: #FFFFFF; --card-line: #CFC4B4; --sel: #FCE3CF; --chip: #F2C14E;
+  --font-body: "PingFang TC", "Heiti TC", "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1B1510; --surface: #2A211A; --raise: #332920; --ink: #F4ECE2; --muted: #B9AB9B; --line: #4A3C30;
+    --accent: #FF8A3D; --accent-ink: #1A1206; --good: #5ED39A; --bad: #FF7C88; --warn-ink: #F2B544;
+    --card: #F7F3EC; --card-line: #8A7C6C; --sel: #FFD2AE; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 14px; }
+.app { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+h1 { margin: 0; font-size: 20px; }
+.ver { color: var(--muted); font-size: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 14px 16px; min-width: 0; }
+.advice { min-height: 160px; }
+.state { display: inline-block; font-size: 13px; font-weight: 700; border-radius: 999px; padding: 2px 10px; background: var(--raise); color: var(--muted); }
+.state.turn { background: var(--accent); color: var(--accent-ink); }
+.state.bad { background: var(--bad); color: #fff; }
+.who { font-size: 14px; color: var(--muted); margin: 8px 0 0; }
+.verb { margin: 2px 0 8px; font-size: 38px; font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; }
+.verb.pass { color: var(--warn-ink); }
+.verb.take { color: var(--good); }
+.verb.wait { font-size: 20px; color: var(--muted); font-weight: 700; }
+.old { opacity: .5; }
+.sub { font-size: 14px; color: var(--muted); }
+.mission { display: inline-block; margin-top: 8px; font-size: 14px; font-weight: 800; color: #1d1606; background: var(--chip); border-radius: 999px; padding: 2px 10px; }
+.note { font-size: 14px; color: var(--muted); margin: 8px 0 0; }
+.note.warn { color: var(--warn-ink); font-weight: 700; }
+.cards { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.pc { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; height: 46px; padding: 0 3px; border-radius: 7px; background: var(--card);
+  border: 1px solid var(--card-line); color: #1E1E24; font-weight: 800; font-size: 17px; line-height: 1; }
+.pc.j { font-size: 12px; }
+.pc.out { background: var(--sel); border: 2px solid var(--accent); transform: translateY(-6px); }
+.seen { font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.seen b { color: var(--ink); }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.btn { font: inherit; font-weight: 700; min-height: 48px; padding: 0 18px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.small { min-height: 40px; font-size: 15px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.set { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 12px; font-size: 15px; }
+.set label { display: flex; align-items: center; gap: 8px; }
+.set select { font: inherit; min-height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--raise); color: var(--ink); padding: 0 10px; }
+.status { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; margin-top: 10px; }
+.status b { color: var(--ink); }
+.support.no { color: var(--bad); font-weight: 700; }
+video { display: block; width: 96px; max-width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: var(--raise); border-radius: 8px; margin-top: 10px; }
+details summary { cursor: pointer; font-weight: 700; color: var(--muted); font-size: 14px; }
+pre { margin: 10px 0 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; background: var(--raise); border-radius: 10px; padding: 8px 10px; }
+textarea { width: 100%; min-height: 140px; margin-top: 10px; font-family: var(--font-mono); font-size: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--raise); color: var(--ink); padding: 8px; }
+.spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: s .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main class="app">
+  <header>
+    <h1>鬥地主小助手</h1>
+    <span class="ver" id="ver"></span>
+  </header>
+  <section class="card advice" id="advice" aria-live="polite"></section>
+  <section class="card">
+    <div class="actions">
+      <button class="btn primary" id="startBtn" type="button" disabled>開始讀螢幕</button>
+      <button class="btn" id="stopBtn" type="button" hidden>停止</button>
+      <button class="btn small" id="newBtn" type="button">新的一局</button>
+      <button class="btn small" id="undoBtn" type="button" disabled>撤銷上一手</button>
+    </div>
+    <p class="note support" id="support"></p>
+    <div class="set">
+      <label>出牌目標
+        <select id="modeIn"><option value="ev">期望盈利（推薦）</option><option value="wp">勝率優先（輸贏較穩）</option></select>
+      </label>
+      <label><input type="checkbox" id="voiceIn" checked> 語音提示</label>
+      <label>也可以選截圖 <input id="fileIn" type="file" accept="image/*"></label>
+    </div>
+    <div class="status" id="status"></div>
+    <video id="video" playsinline muted autoplay></video>
+  </section>
+  <section class="card">
+    <details>
+      <summary>紀錄（出問題時複製給 Claude）</summary>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn small" id="copyBtn" type="button">複製紀錄</button>
+        <button class="btn small" id="saveBtn" type="button">存下目前畫面</button>
+      </div>
+      <textarea id="copyBox" hidden readonly aria-label="紀錄"></textarea>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+<script type="module">
+import { Agent, LABEL } from './engine.js';
+import { Tracker } from './tracker.js?v=h1';
+import { readScreenshot, locateTable } from './vision.js?v=h1';
+
+const VERSION = 'h5';
+const $ = (id) => document.getElementById(id);
+const t0 = performance.now(), lines = [];
+const ts = () => ((performance.now() - t0) / 1000).toFixed(1);
+function log(msg) {
+  lines.push(`${ts()}s  ${msg}`);
+  if (lines.length > 400) lines.splice(0, lines.length - 400);
+  $('log').textContent = lines.slice(-150).join('\n');
+}
+$('ver').textContent = VERSION;
+
+// ---------- 語音提示 ----------
+let voiceEnabled = true;
+try {
+  const v = localStorage.getItem('ddz_voice');
+  if (v === '0') voiceEnabled = false;
+} catch (e) {}
+const voiceIn = $('voiceIn');
+if (voiceIn) {
+  voiceIn.checked = voiceEnabled;
+  voiceIn.addEventListener('change', () => {
+    voiceEnabled = voiceIn.checked;
+    try { localStorage.setItem('ddz_voice', voiceEnabled ? '1' : '0'); } catch (e) {}
+  });
+}
+function speakAdvice(text) {
+  if (!voiceEnabled || !text || !window.speechSynthesis) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(text));
+    u.lang = 'zh-TW';
+    u.rate = 1.15;
+    u.volume = 1;
+    const voices = speechSynthesis.getVoices();
+    const prefer = voices.find(v => /zh-TW|zh_TW|Chinese.*Taiwan|國語|台/.test(v.lang + v.name))
+      || voices.find(v => /zh-CN|zh_CN|Chinese|中文|普通话/.test(v.lang + v.name));
+    if (prefer) u.voice = prefer;
+    speechSynthesis.speak(u);
+  } catch (e) { log('語音失敗：' + (e.message || e)); }
+}
+if (window.speechSynthesis) {
+  speechSynthesis.getVoices();
+  speechSynthesis.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
+}
+window.addEventListener('error', (e) => log('錯誤：' + (e.message || e)));
+window.addEventListener('unhandledrejection', (e) => log('錯誤：' + (e.reason && e.reason.message || e.reason)));
+
+let tracker = null, agent = null, templates = null, missionTpl = null;
+const undoStack = [];
+async function boot() {
+  $('advice').innerHTML = '<p class="verb wait"><span class="spin"></span>載入 AI 模型中…</p>';
+  try {
+    const bin = (p) => fetch(p).then((r) => { if (!r.ok) throw new Error(p + ' ' + r.status); return r.arrayBuffer(); });
+    const js = (p) => fetch(p).then((r) => { if (!r.ok) throw new Error(p + ' ' + r.status); return r.json(); });
+    const [man, buf, tpl] = await Promise.all([js('./douzero_wp.json'), bin('./douzero_wp.bin'), js('./templates.json?v=h1')]);
+    let adp = null;
+    try { const [am, ab] = await Promise.all([js('./douzero_adp.json'), bin('./douzero_adp.bin')]); adp = { manifest: am, buffer: ab }; } catch (e) { log('期望盈利模型沒載入：' + e.message); }
+    try { missionTpl = await js('./mission_tpl.json?v=h1'); } catch (e) { log('任務字形沒載入：' + e.message); }
+    agent = new Agent(man, buf, adp);
+    templates = tpl;
+    tracker = new Tracker(agent, tpl, { missionTpl });
+    const sel = $('modeIn');
+    let saved = null; try { saved = localStorage.getItem('ddz_mode'); } catch (e) {}
+    if (saved === 'wp' || saved === 'ev') sel.value = saved;
+    if (!adp) { sel.value = 'wp'; sel.disabled = true; }
+    agent.useAdp = sel.value === 'ev';
+    sel.addEventListener('change', () => { agent.useAdp = sel.value === 'ev'; try { localStorage.setItem('ddz_mode', sel.value); } catch (e) {} });
+    $('startBtn').disabled = !supported;
+    log('模型載入完成');
+    showIdle();
+  } catch (e) {
+    $('advice').innerHTML = `<p class="verb wait">模型載入失敗，請重新整理</p><p class="note">${esc(e.message || e)}</p>`;
+    log('模型載入失敗：' + (e.message || e));
+  }
+}
+
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&', '<': '<', '>': '>' }[c]));
+const sortDesc = (a) => a.slice().sort((x, y) => y - x);
+const fmtMove = (m) => (m.length ? sortDesc(m).map((c) => LABEL[c]).join(' ') : '不出');
+function handHTML(hand, sel) {
+  const want = {}; for (const c of sel || []) want[c] = (want[c] || 0) + 1;
+  return '<div class="cards">' + sortDesc(hand).map((c) => {
+    const on = want[c] > 0; if (on) want[c]--;
+    return `<span class="pc${on ? ' out' : ''}${c >= 20 ? ' j' : ''}">${LABEL[c]}</span>`;
+  }).join('') + '</div>';
+}
+const warnHTML = (ws) => (ws && ws.length ? ws.map((w) => `<p class="note warn">${esc(w)}</p>`).join('') : '');
+function seenHTML(r) {
+  const rec = r.rec; if (!rec || !rec.ok) return '';
+  const side = (gl, pass) => (pass ? '不出' : gl.length ? gl.map((g) => g.joker || g.label).join(' ') : '（沒出牌）');
+  const c = r.counts || {}, left = (n) => (n != null ? `（剩 ${n}）` : '');
+  const seq = r.seq && r.seq.length ? r.seq.map(fmtMove).join(' → ') : '';
+  return `<div class="seen">左家 <b>${esc(side(rec.leftGlyphs, rec.leftPass))}</b>${left(c.left)}　右家 <b>${esc(side(rec.rightGlyphs, rec.rightPass))}</b>${left(c.right)}　你 <b>${r.hand.length}</b> 張${seq ? `<br>本局：${esc(seq)}` : ''}</div>`;
+}
+
+let lastHTML = '', stateTxt = '', stateCls = '';
+function paint() {
+  $('advice').innerHTML = `<span class="state ${stateCls}">${esc(stateTxt)}</span>` + (lastHTML || '');
+}
+function setState(txt, cls = '') { if (txt === stateTxt && cls === stateCls) return; stateTxt = txt; stateCls = cls; paint(); }
+function showIdle() {
+  stateTxt = stream ? '讀螢幕中' : '還沒開始';
+  lastHTML = `<p class="verb wait">${stream ? '等輪到你…' : '按「開始讀螢幕」，選擇分享整個螢幕'}</p><p class="note">遊戲視窗要露在螢幕上；輪到你時，這裡會自動出現建議。</p>`;
+  paint();
+}
+function render(r) {
+  let h = '';
+  let speakText = '';
+  if (r.kind === 'error' || r.kind === 'wait') {
+    h = `<p class="verb wait">${esc(r.message)}</p>${r.hand && r.hand.length ? handHTML(r.hand, []) : ''}`;
+  } else if (r.kind === 'bid') {
+    h = `<p class="who">叫地主階段</p><p class="verb ${r.take ? 'take' : 'pass'}">${esc(r.message)}</p><p class="sub">${esc(r.detail)}</p>` +
+      (r.mission ? `<span class="mission">任務：最後一手${esc(r.mission.word)}獲勝 ×${r.mission.mult}</span><p class="note">叫地主的建議還沒把任務算進去</p>` : '') +
+      handHTML(r.hand, []) + warnHTML(r.warnings);
+    speakText = r.message || '';
+  } else if (r.kind === 'play') {
+    const m = r.best.move, pass = !m.length;
+    const who = { landlord: '你是地主', landlord_up: '你是農民（地主上家）', landlord_down: '你是農民（地主下家）' }[r.pos.me];
+    const ev = r.best.missionEv != null ? `・期望（含任務）${r.best.missionEv >= 0 ? '+' : ''}${r.best.missionEv.toFixed(2)}` : r.best.ev != null ? `・期望 ${r.best.ev >= 0 ? '+' : ''}${r.best.ev.toFixed(2)}` : '';
+    const moveText = pass ? '不出' : fmtMove(m);
+    h = `<p class="who">${who}・建議</p><p class="verb${pass ? ' pass' : ''}">${pass ? '不出' : esc(moveText)}</p>` +
+      `<p class="sub">${pass ? '按「不出」' : '點亮下面標起來的牌，按「出牌」'}${r.best.winProb != null ? `・勝率 ${(r.best.winProb * 100).toFixed(0)}%` : ''}${ev}</p>` +
+      (r.mission ? `<span class="mission">任務：最後一手${esc(r.mission.word)}獲勝 ×${r.mission.mult}</span>${r.mission.changed ? `<p class="note warn">為了任務改出這手（不管任務的話：${esc(fmtMove(r.mission.plain))}）</p>` : ''}` : '') +
+      handHTML(r.hand, m) + warnHTML(r.warnings) + seenHTML(r) +
+      (r.ranked.length > 1 ? `<p class="note">其他：${r.ranked.slice(1).map((x) => { const e = x.missionEv != null ? x.missionEv : x.ev; return `${esc(fmtMove(x.move))}${x.winProb != null ? `（${(x.winProb * 100).toFixed(0)}%${e != null ? `，${e >= 0 ? '+' : ''}${e.toFixed(2)}` : ''}）` : ''}`; }).join('、')}</p>` : '');
+    speakText = moveText;
+  }
+  lastHTML = h;
+  paint();
+  if (speakText) speakAdvice(speakText);
+}
+function summary(r) {
+  if (r.kind === 'bid') return `叫地主：${r.message}（${r.hand.length} 張）`;
+  if (r.kind === 'play') return `${r.pos.me} 建議 ${fmtMove(r.best.move)}｜左 ${r.rec.leftPass ? '不出' : r.rec.leftGlyphs.map((g) => g.joker || g.label).join('')}｜右 ${r.rec.rightPass ? '不出' : r.rec.rightGlyphs.map((g) => g.joker || g.label).join('')}｜手牌 ${r.hand.length}${r.warnings.length ? '｜' + r.warnings.join('；') : ''}`;
+  return `${r.kind}：${r.message || ''}`;
+}
+
+const T = { inTurn: false, key: null, pendKey: null, lastTotal: null, lastPhase: null, oppSeen: 0, seen: {}, lastCnt: {} };
+const SIDE = { left: '左', right: '右' };
+function noteSides(rec) {
+  for (const s of ['left', 'right']) {
+    const gl = rec[s + 'Glyphs'], pass = rec[s + 'Pass'];
+    if (gl.length || pass) T.seen[s] = { glyphs: gl, pass };
+  }
+}
+function fillCovered(rec) {
+  for (const s of ['left', 'right']) {
+    const seen = T.seen[s], now = cnt(rec, s), before = T.lastCnt[s];
+    if (rec[s + 'Glyphs'].length || rec[s + 'Pass'] || !seen || now == null || before == null) continue;
+    const d = before - now;
+    if (seen.glyphs.length && d === seen.glyphs.length) {
+      rec[s + 'Glyphs'] = seen.glyphs;
+      log(`${SIDE[s]}家的牌被擋住了，用剛才看到的 ${seen.glyphs.map((g) => g.joker || g.label).join('')}`);
+    } else if (seen.pass && d === 0) {
+      rec[s + 'Pass'] = true;
+      log(`${SIDE[s]}家被擋住了，用剛才看到的「不出」`);
+    }
+  }
+}
+const cnt = (rec, s) => { const c = rec.counts && rec.counts[s]; return c && c.value != null && c.dist < 0.06 ? c.value : null; };
+function totalOf(rec) { const a = cnt(rec, 'me'), b = cnt(rec, 'left'), c = cnt(rec, 'right'); return a != null && b != null && c != null ? a + b + c : null; }
+function turnKey(rec, phase) {
+  const side = (gl, pass) => (pass ? 'P' : gl.map((g) => g.joker || g.label).join(','));
+  const tot = totalOf(rec);
+  return [phase, tot == null ? '?' : tot, rec.handGlyphs.length, side(rec.leftGlyphs, rec.leftPass), side(rec.rightGlyphs, rec.rightPass), rec.bidKind || ''].join('|');
+}
+let busy = false;
+async function onRead(img, rec, src) {
+  if (!tracker) return;
+  if (!rec.ok) { if (T.inTurn) log('看不到牌桌'); T.inTurn = false; T.pendKey = null; setState('找不到牌桌（遊戲視窗要露出來）', 'bad'); return; }
+  const myTurn = rec.myTimer > 0.15 || rec.buttons.length >= 2;
+  if (!myTurn) {
+    if (T.inTurn) log('對手回合');
+    T.inTurn = false; T.pendKey = null; T.oppSeen++;
+    noteSides(rec);
+    setState('等對手…');
+    $('advice').classList.add('old');
+    return;
+  }
+  const phase = rec.bottom.state === 'down' ? 'bid' : rec.bottom.state === 'up' ? 'play' : rec.buttons.length === 2 ? 'bid' : 'play';
+  const key = turnKey(rec, phase);
+  if (T.inTurn && key === T.key) return;
+  if (phase === 'bid' && rec.handGlyphs.length < 14) { setState('等下一局…'); return; }
+  noteSides(rec);
+  if (key !== T.pendKey) { T.pendKey = key; setState('輪到你，讀牌中…', 'turn'); if (worker) worker.postMessage({ want: true }); return; }
+  T.inTurn = true; T.key = key; T.pendKey = null;
+  const tot = totalOf(rec);
+  if (phase === 'play' && T.lastPhase === 'play' && lastHTML) {
+    const same = tot != null && T.lastTotal != null ? tot === T.lastTotal : T.oppSeen < 2;
+    if (same) { $('advice').classList.remove('old'); setState('輪到你', 'turn'); return; }
+  }
+  busy = true;
+  setState('輪到你，計算中…', 'turn');
+  await new Promise((r) => setTimeout(r, 0));
+  try {
+    undoStack.push(JSON.stringify(tracker.game)); if (undoStack.length > 40) undoStack.shift();
+    $('undoBtn').disabled = false;
+    const t1 = performance.now();
+    if (phase === 'play') fillCovered(rec);
+    const r = tracker.process(img, rec);
+    T.lastTotal = tot; T.lastPhase = phase; T.oppSeen = 0; T.seen = {};
+    T.lastCnt = phase === 'play' ? { left: cnt(rec, 'left'), right: cnt(rec, 'right') } : {};
+    $('advice').classList.remove('old');
+    render(r);
+    setState('輪到你', 'turn');
+    log(`${src}｜${summary(r)}｜${Math.round(performance.now() - t1)}ms`);
+  } catch (e) { log('計算出錯：' + (e.message || e)); setState('計算出錯', 'bad'); }
+  finally { busy = false; }
+}
+
+const supported = !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+$('support').textContent = supported ? '這個瀏覽器可以分享螢幕。' : '這個瀏覽器不能分享螢幕（iPad 要 iPadOS 27 的 Safari）。仍然可以用上面的「選截圖」。';
+if (!supported) $('support').classList.add('no');
+const MAXSIDE = 1900, FELT = 1300;
+const R = { reads: 0, state: '', ms: [], wstate: '沒試', lastBeat: 0, lastN: 0 };
+let scaleBy = {}, lastRead = 0, rot = 0, rotOk = false, misses = 0, nextTry = 1;
+let stream = null, timer = null, lastFp = null, worker = null, pending = null, wakeLock = null;
+const cv = document.createElement('canvas'), g = cv.getContext('2d', { willReadFrequently: true });
+const sm = document.createElement('canvas'); sm.width = 48; sm.height = 27;
+const gs = sm.getContext('2d', { willReadFrequently: true });
+const WORKER_SRC = `
+  let running = true, fpLast = null, n = 0, lastFp = 0, lastBeat = 0, lastSent = 0, force = false;
+  const sm = new OffscreenCanvas(48, 27), gs = sm.getContext('2d', { willReadFrequently: true });
+  self.onmessage = async (e) => {
+    if (e.data && e.data.stop) { running = false; return; }
+    if (e.data && e.data.want) { force = true; return; }
+    const track = e.data.track;
+    if (typeof MediaStreamTrackProcessor !== 'function') { self.postMessage({ kind: 'fail', why: '背景執行緒沒有 MediaStreamTrackProcessor' }); return; }
+    let rd;
+    try { rd = new MediaStreamTrackProcessor({ track }).readable.getReader(); }
+    catch (err) { self.postMessage({ kind: 'fail', why: 'MediaStreamTrackProcessor：' + (err && err.name || err) }); return; }
+    self.postMessage({ kind: 'ok' });
+    while (running) {
+      let r;
+      try { r = await rd.read(); } catch (err) { self.postMessage({ kind: 'fail', why: '讀畫格：' + (err && err.name || err) }); return; }
+      if (r.done) { self.postMessage({ kind: 'end' }); return; }
+      const f = r.value; n++;
+      const now = performance.now();
+      try {
+        if (now - lastFp >= 600) {
+          lastFp = now;
+          gs.drawImage(f, 0, 0, 48, 27);
+          const px = gs.getImageData(0, 0, 48, 27).data, fp = new Uint8Array(48 * 27);
+          for (let i = 0; i < fp.length; i++) fp[i] = (px[4 * i] + px[4 * i + 1] + px[4 * i + 2]) / 3;
+          let diff = 0;
+          if (fpLast) { for (let i = 0; i < fp.length; i++) diff += Math.abs(fp[i] - fpLast[i]); diff /= fp.length; }
+          const changed = !fpLast || diff > 0.4 || force || now - lastSent >= 2000;
+          fpLast = fp;
+          if (changed) { force = false; lastSent = now; const bmp = await createImageBitmap(f); self.postMessage({ kind: 'frame', bmp, n }, [bmp]); }
+        }
+        if (now - lastBeat >= 1000) { lastBeat = now; self.postMessage({ kind: 'beat', n }); }
+      } catch (err) { self.postMessage({ kind: 'warn', why: String(err && err.name || err) }); }
+      finally { f.close(); }
+    }
+  };`;
+function startWorker(track) {
+  if (typeof Worker !== 'function' || typeof OffscreenCanvas !== 'function') { R.wstate = '不用'; return; }
+  let clone;
+  try {
+    clone = track.clone();
+    worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' })));
+    worker.onmessage = onWorker;
+    worker.onerror = (e) => { R.wstate = '失敗'; log('背景執行緒出錯：' + (e.message || e)); };
+    worker.postMessage({ track: clone }, [clone]);
+    R.wstate = '啟動中';
+  } catch (e) {
+    R.wstate = '不支援'; log(`背景執行緒取畫面：不支援（${e.name || e}），改用影片`);
+    try { clone && clone.stop(); } catch (x) {}
+    if (worker) { worker.terminate(); worker = null; }
+  }
+}
+function onWorker(e) {
+  const m = e.data || {};
+  if (m.kind === 'ok') { R.wstate = '啟動了'; log('背景執行緒取畫面：啟動了'); }
+  else if (m.kind === 'fail' || m.kind === 'end') { R.wstate = m.kind === 'end' ? '結束' : '失敗'; log(`背景執行緒取畫面：${R.wstate}${m.why ? '（' + m.why + '）' : ''}，改用影片`); }
+  else if (m.kind === 'beat') { R.lastN = m.n; R.lastBeat = performance.now(); if (R.wstate === '啟動了' && m.n > 0) { R.wstate = '收得到畫格'; log('背景執行緒：收得到畫格'); } }
+  else if (m.kind === 'frame') { R.lastBeat = performance.now(); if (pending) pending.close(); pending = m.bmp; }
+}
+const workerLive = () => worker && R.lastBeat && performance.now() - R.lastBeat < 3500 && R.lastN > 0;
+async function wake() { try { if (navigator.wakeLock && (!wakeLock || wakeLock.released)) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { log(document.hidden ? '這頁到背景了' : '這頁回到前景'); if (!document.hidden && stream) wake(); });
+
+async function start() {
+  if (stream || !tracker) return;
+  try { stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }); }
+  catch (e) { log(`沒有開始分享：${e.name}：${e.message}`); stream = null; return; }
+  const track = stream.getVideoTracks()[0];
+  const st = track && track.getSettings ? track.getSettings() : {};
+  log(`開始分享：${JSON.stringify({ width: st.width, height: st.height, frameRate: st.frameRate, displaySurface: st.displaySurface })}`);
+  if (track) {
+    track.addEventListener('ended', () => { log('分享被停止了'); stop(true); });
+    track.addEventListener('mute', () => log(`影像暫停（${document.hidden ? '背景' : '前景'}）`));
+  }
+  $('video').srcObject = stream;
+  $('startBtn').hidden = true; $('stopBtn').hidden = false;
+  showIdle();
+  startWorker(track);
+  wake();
+  timer = setInterval(tick, 400);
+}
+function stop(fromEnded) {
+  if (timer) { clearInterval(timer); timer = null; }
+  if (worker) { try { worker.postMessage({ stop: true }); } catch (e) {} worker.terminate(); worker = null; }
+  if (stream) {
+    for (const t of stream.getTracks()) try { t.stop(); } catch (e) {}
+    stream = null;
+  }
+  if (pending) { try { pending.close(); } catch (e) {} pending = null; }
+  $('video').srcObject = null;
+  $('startBtn').hidden = false; $('stopBtn').hidden = true;
+  if (!fromEnded) log('已停止');
+  showIdle();
+}
+async function tick() {
+  if (!stream || busy) return;
+  const now = performance.now();
+  if (now - lastRead < 350) return;
+  let bmp = pending; pending = null;
+  if (!bmp && workerLive()) return;
+  if (!bmp) {
+    const v = $('video');
+    if (!v.videoWidth) return;
+    const w = Math.min(v.videoWidth, MAXSIDE), h = Math.round(w * v.videoHeight / v.videoWidth);
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    g.drawImage(v, 0, 0, w, h);
+    bmp = await createImageBitmap(cv);
+  }
+  lastRead = now;
+  try {
+    const rec = await readScreenshot(bmp, templates, { scaleBy, rot, rotOk, missionTpl });
+    R.reads++; R.state = rec.ok ? 'ok' : 'miss';
+    if (rec.ok) { misses = 0; if (rec.scale) scaleBy = rec.scale; if (rec.rot != null) { rot = rec.rot; rotOk = true; } }
+    else { misses++; if (misses > 8) { rotOk = false; scaleBy = {}; } }
+    await onRead(bmp, rec, workerLive() ? '背景' : '影片');
+  } catch (e) { log('讀圖出錯：' + (e.message || e)); }
+  finally { try { bmp.close(); } catch (e) {} }
+}
+
+$('startBtn').addEventListener('click', start);
+$('stopBtn').addEventListener('click', () => stop(false));
+$('newBtn').addEventListener('click', () => {
+  if (tracker) tracker.reset();
+  undoStack.length = 0; $('undoBtn').disabled = true;
+  T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; T.oppSeen = 0; T.seen = {}; T.lastCnt = {};
+  lastHTML = ''; showIdle();
+  log('新的一局');
+});
+$('undoBtn').addEventListener('click', () => {
+  if (!undoStack.length || !tracker) return;
+  try { tracker.game = JSON.parse(undoStack.pop()); } catch (e) { log('撤銷失敗'); return; }
+  $('undoBtn').disabled = !undoStack.length;
+  T.inTurn = false; T.key = null; T.pendKey = null;
+  lastHTML = ''; showIdle();
+  log('撤銷上一手');
+});
+$('fileIn').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0]; if (!f || !tracker) return;
+  try {
+    const bmp = await createImageBitmap(f);
+    const rec = await readScreenshot(bmp, templates, { scaleBy, rot, rotOk, missionTpl });
+    await onRead(bmp, rec, '截圖');
+    bmp.close();
+  } catch (err) { log('截圖失敗：' + (err.message || err)); }
+  e.target.value = '';
+});
+$('copyBtn').addEventListener('click', () => {
+  const text = `鬥地主小助手 ${VERSION}｜${navigator.userAgent}\n` + lines.join('\n');
+  $('copyBox').value = text; $('copyBox').hidden = false;
+  $('copyBox').select();
+  try { navigator.clipboard.writeText(text); log('已複製紀錄'); } catch (e) { log('請手動複製'); }
+});
+$('saveBtn').addEventListener('click', async () => {
+  if (!stream && !$('video').srcObject) { log('沒有畫面可存'); return; }
+  try {
+    const v = $('video');
+    if (!v.videoWidth) { log('還沒有畫面'); return; }
+    const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
+    c.getContext('2d').drawImage(v, 0, 0);
+    const a = document.createElement('a'); a.download = `ddz-${Date.now()}.png`; a.href = c.toDataURL('image/png');
+    a.click();
+    log('已存畫面');
+  } catch (e) { log('存畫面失敗：' + (e.message || e)); }
+});
+
+boot();
+</script>
+</body>
+</html>
