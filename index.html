@@ -155,7 +155,7 @@ async function boot() {
   }
 }
 
-const esc=(s)=>{const m={38:'amp',60:'lt',62:'gt'};return String(s).replace(/[&<>]/g,c=>String.fromCharCode(38)+m[c.charCodeAt(0)]+';');};
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const sortDesc = (a) => a.slice().sort((x, y) => y - x);
 const fmtMove = (m) => (m.length ? sortDesc(m).map((c) => LABEL[c]).join(' ') : '不出');
 function handHTML(hand, sel) {
@@ -213,7 +213,12 @@ function summary(r) {
 }
 
 // ---------- one turn = one advice ----------
+// A turn is identified by what the table shows (phase, my card count, the opponents' plays, the
+// bidding banner); raising cards in the game does not start a new turn. A new turn is acted on
+// once two reads in a row agree, so animations are never read half way.
 const T = { inTurn: false, key: null, pendKey: null, lastTotal: null, lastPhase: null, oppSeen: 0, seen: {}, lastCnt: {} };
+// What each opponent's spot on the table showed since my last advice. A chat bubble can cover their cards by the time
+// it is my turn; then the cards seen earlier are used, if their card count went down by exactly that many.
 const SIDE = { left: '左', right: '右' };
 function noteSides(rec) {
   for (const s of ['left', 'right']) {
@@ -235,6 +240,7 @@ function fillCovered(rec) {
     }
   }
 }
+// cards left in all three hands, from the count bubbles; it always goes down between two of my turns
 const cnt = (rec, s) => { const c = rec.counts && rec.counts[s]; return c && c.value != null && c.dist < 0.06 ? c.value : null; };
 function totalOf(rec) { const a = cnt(rec, 'me'), b = cnt(rec, 'left'), c = cnt(rec, 'right'); return a != null && b != null && c != null ? a + b + c : null; }
 function turnKey(rec, phase) {
@@ -257,11 +263,13 @@ async function onRead(img, rec, src) {
   }
   const phase = rec.bottom.state === 'down' ? 'bid' : rec.bottom.state === 'up' ? 'play' : rec.buttons.length === 2 ? 'bid' : 'play';
   const key = turnKey(rec, phase);
-  if (T.inTurn && key === T.key) return;
-  if (phase === 'bid' && rec.handGlyphs.length < 14) { setState('等下一局…'); return; }
+  if (T.inTurn && key === T.key) return; // already advised on this turn
+  if (phase === 'bid' && rec.handGlyphs.length < 14) { setState('等下一局…'); return; } // the end-of-game screen
   noteSides(rec);
   if (key !== T.pendKey) { T.pendKey = key; setState('輪到你，讀牌中…', 'turn'); if (worker) worker.postMessage({ want: true }); return; }
   T.inTurn = true; T.key = key; T.pendKey = null;
+  // Still the same turn if no cards left anyone's hand since my last advice (a flicker in the read, raised cards,
+  // a banner): keep the advice instead of recording the opponents' plays a second time.
   const tot = totalOf(rec);
   if (phase === 'play' && T.lastPhase === 'play' && lastHTML) {
     const same = tot != null && T.lastTotal != null ? tot === T.lastTotal : T.oppSeen < 2;
@@ -287,11 +295,13 @@ async function onRead(img, rec, src) {
 }
 
 // ---------- reading the screen ----------
+// Pictures come from a background thread reading the stream's frames (MediaStreamTrackProcessor) when this browser has
+// it, else from the <video> element. Only pictures that changed are read; big screens are scaled down first.
 const supported = !!(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
 $('support').textContent = supported ? '這個瀏覽器可以分享螢幕。' : '這個瀏覽器不能分享螢幕（iPad 要 iPadOS 27 的 Safari）。仍然可以用上面的「選截圖」。';
 if (!supported) $('support').classList.add('no');
-const MAXSIDE = 1900, FELT = 1300;
-const R = { reads: 0, state: '', ms: [], wstate: '沒試', lastBeat: 0, lastN: 0 };
+const MAXSIDE = 1900, FELT = 1300; // read at most 1900 px wide, scaled so the table felt is about 1300 px wide
+const R = { reads: 0, size: '', ms: [], wstate: '沒試', lastBeat: 0, lastN: 0 };
 let scaleBy = {}, lastRead = 0, rot = 0, rotOk = false, misses = 0, nextTry = 1;
 let stream = null, timer = null, lastFp = null, worker = null, pending = null, wakeLock = null;
 const cv = document.createElement('canvas'), g = cv.getContext('2d', { willReadFrequently: true });
@@ -369,98 +379,166 @@ async function start() {
   if (track) {
     track.addEventListener('ended', () => { log('分享被停止了'); stop(true); });
     track.addEventListener('mute', () => log(`影像暫停（${document.hidden ? '背景' : '前景'}）`));
+    track.addEventListener('unmute', () => log(`影像恢復（${document.hidden ? '背景' : '前景'}）`));
   }
-  $('video').srcObject = stream;
-  $('startBtn').hidden = true; $('stopBtn').hidden = false;
-  showIdle();
-  startWorker(track);
+  const v = $('video');
+  v.srcObject = stream;
+  try { await v.play(); } catch (e) { log('影像播放：' + e.name); }
+  if (track) startWorker(track);
   wake();
-  timer = setInterval(tick, 400);
+  lastFp = null; T.inTurn = false; T.pendKey = null; rotOk = false; misses = 0; nextTry = 1; scanDims = ''; sinceScan = 0;
+  $('startBtn').hidden = true; $('stopBtn').hidden = false;
+  timer = setInterval(tick, 700);
+  showIdle();
 }
-function stop(fromEnded) {
-  if (timer) { clearInterval(timer); timer = null; }
-  if (worker) { try { worker.postMessage({ stop: true }); } catch (e) {} worker.terminate(); worker = null; }
-  if (stream) {
-    for (const t of stream.getTracks()) try { t.stop(); } catch (e) {}
-    stream = null;
-  }
-  if (pending) { try { pending.close(); } catch (e) {} pending = null; }
+function stop(byTrack) {
+  if (timer) clearInterval(timer);
+  timer = null;
+  if (worker) { try { worker.postMessage({ stop: true }); } catch (e) {} const w = worker; setTimeout(() => w.terminate(), 300); worker = null; }
+  if (pending) { pending.close(); pending = null; }
+  if (stream) { if (!byTrack) stream.getTracks().forEach((t) => t.stop()); stream = null; log('停止讀螢幕'); }
+  try { wakeLock && wakeLock.release(); } catch (e) {}
   $('video').srcObject = null;
   $('startBtn').hidden = false; $('stopBtn').hidden = true;
-  if (!fromEnded) log('已停止');
   showIdle();
 }
-async function tick() {
-  if (!stream || busy) return;
-  const now = performance.now();
-  if (now - lastRead < 350) return;
-  let bmp = pending; pending = null;
-  if (!bmp && workerLive()) return;
-  if (!bmp) {
-    const v = $('video');
-    if (!v.videoWidth) return;
-    const w = Math.min(v.videoWidth, MAXSIDE), h = Math.round(w * v.videoHeight / v.videoWidth);
-    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
-    g.drawImage(v, 0, 0, w, h);
-    bmp = await createImageBitmap(cv);
-  }
-  lastRead = now;
-  try {
-    const rec = await readScreenshot(bmp, templates, { scaleBy, rot, rotOk, missionTpl });
-    R.reads++; R.state = rec.ok ? 'ok' : 'miss';
-    if (rec.ok) { misses = 0; if (rec.scale) scaleBy = rec.scale; if (rec.rot != null) { rot = rec.rot; rotOk = true; } }
-    else { misses++; if (misses > 8) { rotOk = false; scaleBy = {}; } }
-    await onRead(bmp, rec, workerLive() ? '背景' : '影片');
-  } catch (e) { log('讀圖出錯：' + (e.message || e)); }
-  finally { try { bmp.close(); } catch (e) {} }
+// draw a source (video / bitmap) scaled so its longer side is at most MAXSIDE, return ImageData
+// draw scaled by s and turned by r degrees (the shared screen can arrive lying on its side)
+function draw(src, W, H, s, r = 0) {
+  const w = Math.round(W * s), h = Math.round(H * s);
+  const cw = r % 180 ? h : w, ch = r % 180 ? w : h;
+  if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+  g.setTransform(1, 0, 0, 1, cw / 2, ch / 2);
+  g.rotate((r * Math.PI) / 180);
+  g.drawImage(src, -w / 2, -h / 2, w, h);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  return g.getImageData(0, 0, cw, ch);
 }
+// small game windows are read at full resolution, big ones are scaled down so the felt is about FELT px wide
+function grab(src, W, H, r = 0) {
+  let s = scaleBy[r] || Math.min(1, MAXSIDE / Math.max(W, H));
+  let img = draw(src, W, H, s, r);
+  const tb = locateTable(img);
+  if (tb && tb.width > 50) {
+    const want = Math.min(1, s * FELT / tb.width);
+    if (Math.abs(want - s) / s > 0.12) { s = want; img = draw(src, W, H, s, r); }
+    scaleBy[r] = s;
+  }
+  return img;
+}
+// The shared screen can arrive turned on its side. Until the direction is known (and again whenever the table
+// stops showing up), read the frame in all four directions and keep the one that shows the most cards in hand.
+const good = (rec) => rec.ok && rec.handGlyphs.length >= 3;
+const score = (rec) => (rec.ok ? rec.handGlyphs.length + 2 * rec.buttons.length : -1);
+function readAt(src, W, H, r) { const img = grab(src, W, H, r); return { img, rec: readScreenshot(img, templates, false, missionTpl), r }; }
+let scanDims = '', sinceScan = 0;
+function readFrame(src, W, H) {
+  const cur = readAt(src, W, H, rot), dims = `${W}x${H}`;
+  const due = dims !== scanDims || ++sinceScan >= 15; // the iPad was turned, or a routine re-check
+  if (rotOk && good(cur.rec) && !due) { misses = 0; return cur; }
+  if (!due && ++misses < nextTry) return cur;
+  misses = 0; sinceScan = 0; scanDims = dims;
+  let best = cur;
+  for (const r of [0, 90, 270, 180]) {
+    if (r === rot) continue;
+    const t = readAt(src, W, H, r);
+    if (score(t.rec) > score(best.rec) + (best === cur && good(cur.rec) ? 2 : 0)) best = t;
+  }
+  if (good(best.rec)) {
+    if (!rotOk || best.r !== rot) log(`畫面方向：轉 ${best.r}° 才是正的（手牌 ${best.rec.handGlyphs.length} 張）`);
+    rot = best.r; rotOk = true; nextTry = 3;
+    $('video').style.transform = rot ? `rotate(${rot}deg)` : '';
+  } else nextTry = 5; // no game on screen right now: look again a few reads later
+  return best;
+}
+async function tick() {
+  if (busy || !stream) return;
+  const v = $('video');
+  let src = null, W = 0, H = 0, from = '';
+  if (workerLive()) {
+    if (pending) { src = pending; pending = null; W = src.width; H = src.height; from = '背景'; }
+  } else if (v.videoWidth && v.readyState >= 2) {
+    gs.drawImage(v, 0, 0, 48, 27);
+    const px = gs.getImageData(0, 0, 48, 27).data, fp = new Uint8Array(48 * 27);
+    for (let i = 0; i < fp.length; i++) fp[i] = (px[4 * i] + px[4 * i + 1] + px[4 * i + 2]) / 3;
+    let diff = 0;
+    if (lastFp) { for (let i = 0; i < fp.length; i++) diff += Math.abs(fp[i] - lastFp[i]); diff /= fp.length; }
+    const changed = !lastFp || diff > 0.4;
+    lastFp = fp;
+    if (changed || T.pendKey || performance.now() - lastRead > 2000) { src = v; W = v.videoWidth; H = v.videoHeight; from = '影片'; }
+  }
+  if (!src) return;
+  const r0 = performance.now();
+  let img, rec;
+  try { ({ img, rec } = readFrame(src, W, H)); } catch (e) { log('讀畫面出錯：' + (e.message || e)); return; }
+  finally { if (src !== v && src.close) src.close(); }
+  if (R.size !== `${W}x${H}→${img.width}x${img.height}`) { R.size = `${W}x${H}→${img.width}x${img.height}`; log(`讀的畫面 ${R.size}（${from}）`); }
+  R.ms.push(Math.round(performance.now() - r0)); if (R.ms.length > 50) R.ms.shift();
+  R.reads++; lastRead = performance.now();
+  renderStatus();
+  await onRead(img, rec, from);
+}
+function renderStatus() {
+  const avg = R.ms.length ? Math.round(R.ms.reduce((a, b) => a + b, 0) / R.ms.length) : 0;
+  $('status').innerHTML = `<span>讀了 <b>${R.reads}</b> 次</span><span>每次約 <b>${avg}</b> ms</span><span>畫面 <b>${R.size || '—'}</b></span><span>背景執行緒 <b>${R.wstate}</b></span>`;
+}
+
+// a screenshot picked by hand: read it as one turn, no waiting for a second read
+async function fromFile(file) {
+  if (!file || !tracker || busy) return;
+  busy = true;
+  try {
+    const bmp = await createImageBitmap(file);
+    const img = grab(bmp, bmp.width, bmp.height);
+    const rec = readScreenshot(img, templates, false, missionTpl);
+    undoStack.push(JSON.stringify(tracker.game)); if (undoStack.length > 40) undoStack.shift();
+    $('undoBtn').disabled = false;
+    const r = tracker.process(img, rec);
+    $('advice').classList.remove('old');
+    render(r); setState('截圖');
+    log(`截圖｜${summary(r)}`);
+  } catch (e) { log('截圖出錯：' + (e.message || e)); }
+  finally { busy = false; }
+}
+// for testing without a shared screen: feed a picture as if it came from the stream
+window.__feed = async (blob) => { const bmp = await createImageBitmap(blob); const { img, rec } = readFrame(bmp, bmp.width, bmp.height); await onRead(img, rec, '測試'); return { state: stateTxt, html: $('advice').innerText }; };
 
 $('startBtn').addEventListener('click', start);
 $('stopBtn').addEventListener('click', () => stop(false));
+$('fileIn').addEventListener('change', () => { fromFile($('fileIn').files[0]); $('fileIn').value = ''; });
 $('newBtn').addEventListener('click', () => {
   if (tracker) tracker.reset();
   undoStack.length = 0; $('undoBtn').disabled = true;
   T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; T.oppSeen = 0; T.seen = {}; T.lastCnt = {};
-  lastHTML = ''; showIdle();
-  log('新的一局');
+  log('新的一局'); showIdle();
 });
 $('undoBtn').addEventListener('click', () => {
-  if (!undoStack.length || !tracker) return;
-  try { tracker.game = JSON.parse(undoStack.pop()); } catch (e) { log('撤銷失敗'); return; }
-  $('undoBtn').disabled = !undoStack.length;
-  T.inTurn = false; T.key = null; T.pendKey = null;
-  lastHTML = ''; showIdle();
+  if (!tracker || !undoStack.length) return;
+  const prev = undoStack.pop();
+  tracker.game = prev === 'null' || prev === undefined ? null : JSON.parse(prev);
+  $('undoBtn').disabled = undoStack.length === 0;
+  T.inTurn = false; T.key = null; T.pendKey = null; T.lastTotal = null; T.lastPhase = null; // read the current turn again
   log('撤銷上一手');
-});
-$('fileIn').addEventListener('change', async (e) => {
-  const f = e.target.files && e.target.files[0]; if (!f || !tracker) return;
-  try {
-    const bmp = await createImageBitmap(f);
-    const rec = await readScreenshot(bmp, templates, { scaleBy, rot, rotOk, missionTpl });
-    await onRead(bmp, rec, '截圖');
-    bmp.close();
-  } catch (err) { log('截圖失敗：' + (err.message || err)); }
-  e.target.value = '';
+  lastHTML = '<p class="verb wait">已撤銷，等下一次讀到的畫面…</p>'; paint();
 });
 $('copyBtn').addEventListener('click', () => {
   const text = `鬥地主小助手 ${VERSION}｜${navigator.userAgent}\n` + lines.join('\n');
-  $('copyBox').value = text; $('copyBox').hidden = false;
-  $('copyBox').select();
-  try { navigator.clipboard.writeText(text); log('已複製紀錄'); } catch (e) { log('請手動複製'); }
+  const box = $('copyBox');
+  const fallback = () => { box.hidden = false; box.value = text; box.select(); };
+  try { navigator.clipboard.writeText(text).then(() => { box.hidden = true; $('copyBtn').textContent = '已複製'; setTimeout(() => { $('copyBtn').textContent = '複製紀錄'; }, 3000); }, fallback); }
+  catch (e) { fallback(); }
 });
-$('saveBtn').addEventListener('click', async () => {
-  if (!stream && !$('video').srcObject) { log('沒有畫面可存'); return; }
-  try {
-    const v = $('video');
-    if (!v.videoWidth) { log('還沒有畫面'); return; }
-    const c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
-    c.getContext('2d').drawImage(v, 0, 0);
-    const a = document.createElement('a'); a.download = `ddz-${Date.now()}.png`; a.href = c.toDataURL('image/png');
-    a.click();
-    log('已存畫面');
-  } catch (e) { log('存畫面失敗：' + (e.message || e)); }
+$('saveBtn').addEventListener('click', () => {
+  if (!cv.width) { log('還沒有畫面可以存'); return; }
+  cv.toBlob((b) => {
+    if (!b) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b); a.download = `ddz-${Date.now()}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    log('存下目前畫面');
+  }, 'image/png');
 });
-
 boot();
 </script>
 </body>
